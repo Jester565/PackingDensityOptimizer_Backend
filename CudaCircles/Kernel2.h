@@ -1,7 +1,6 @@
 #pragma once
 #include <map>
 #include <cuda_runtime.h>
-#include "CircleType.h"
 #include <memory>
 
 

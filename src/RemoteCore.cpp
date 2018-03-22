@@ -42,7 +42,7 @@ void RemoteCore::run() {
 
 void RemoteCore::receiveMsg() {
 	Aws::SQS::Model::ReceiveMessageRequest req;
-	req.SetQueueUrl(QUEUE_URL);
+	req.SetQueueUrl(QUEUE_URL.c_str());
 	req.SetMaxNumberOfMessages(1);
 	req.SetWaitTimeSeconds(20);
 	
@@ -86,14 +86,14 @@ void RemoteCore::handleMsg(const Aws::SQS::Model::Message& msg) {
 	
 	std::string respQueueUrl = bodyJson["queueUrl"];
 	Aws::SQS::Model::SendMessageRequest sendReq;
-	sendReq.SetQueueUrl(respQueueUrl);
-	sendReq.SetMessageBody(respBodyJson.dump());
+	sendReq.SetQueueUrl(respQueueUrl.c_str());
+	sendReq.SetMessageBody(respBodyJson.dump().c_str());
 
 	auto sendResult = sqsClient->SendMessage(sendReq);
 	if (sendResult.IsSuccess()) {
 		std::cout << "Sent to queue " << respQueueUrl << std::endl;
 		Aws::SQS::Model::DeleteMessageRequest deleteReq;
-		deleteReq.SetQueueUrl(QUEUE_URL);
+		deleteReq.SetQueueUrl(QUEUE_URL.c_str());
 		deleteReq.SetReceiptHandle(msg.GetReceiptHandle());
 		auto deleteResult = sqsClient->DeleteMessage(deleteReq);
 		if (deleteResult.IsSuccess()) {

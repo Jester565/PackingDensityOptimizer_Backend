@@ -302,7 +302,7 @@ int getNumThreads(int numTangentPoints, int numCircleTypes) {
 }
 
 Kernel2Data* initK2(const std::map<float, int>& circleTypes) {
-	auto k2Data = new Kernel2Data();
+	Kernel2Data* k2Data = new Kernel2Data();
 	k2Data->maxTangentPoints = 4;
 	k2Data->numConstCircleTypes = circleTypes.size();
 	k2Data->numCircleTypes = k2Data->numConstCircleTypes;
@@ -318,9 +318,9 @@ Kernel2Data* initK2(const std::map<float, int>& circleTypes) {
 	cudaMalloc((void**)&k2Data->devTangentPoints, k2Data->maxTangentPoints * sizeof(TangentPoint));
 	cudaMalloc((void**)&k2Data->devResults, maxResultBlocks * sizeof(TangentPointResult));
 	cudaMalloc((void**)&k2Data->devNumCircleTypes, sizeof(int));
-	cudaMalloc((void**)&k2Data->devCircleTypes, k2Data->numCircleTypes * sizeof(CircleType));
-	cudaMalloc((void**)&k2Data->devConstCircleTypes, k2Data->numCircleTypes * sizeof(CircleType));
-	cudaMemcpy(k2Data->devConstCircleTypes, cTypeArr, k2Data->numCircleTypes * sizeof(CircleType), cudaMemcpyHostToDevice);
+	cudaMalloc((void**)&k2Data->devCircleTypes, k2Data->numCircleTypes * sizeof(CircType));
+	cudaMalloc((void**)&k2Data->devConstCircleTypes, k2Data->numCircleTypes * sizeof(CircType));
+	cudaMemcpy(k2Data->devConstCircleTypes, cTypeArr, k2Data->numCircleTypes * sizeof(CircType), cudaMemcpyHostToDevice);
 
 	k2Data->tangentPoints = new TangentPoint[k2Data->maxTangentPoints];
 	delete[] cTypeArr;
