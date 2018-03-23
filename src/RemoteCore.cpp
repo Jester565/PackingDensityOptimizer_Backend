@@ -74,6 +74,7 @@ void RemoteCore::handleMsg(const Aws::SQS::Model::Message& msg) {
 	respBodyJson["w"] = solution->w;
 	respBodyJson["h"] = solution->h;
 	respBodyJson["density"] = solution->density;
+	respBodyJson["msgId"] = bodyJson["msgId"];
 	auto circleArrJson = nlohmann::json::array();
 	for (auto it = solution->circles.begin(); it != solution->circles.end(); it++) {
 		auto circleJson = nlohmann::json::object();

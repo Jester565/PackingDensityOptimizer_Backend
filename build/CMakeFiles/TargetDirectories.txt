@@ -1,0 +1,4 @@
+/home/ajcraig/projects/CirclesCMake/build/CMakeFiles/edit_cache.dir
+/home/ajcraig/projects/CirclesCMake/build/CMakeFiles/rebuild_cache.dir
+/home/ajcraig/projects/CirclesCMake/build/CMakeFiles/CudaCircles_gpu.dir
+/home/ajcraig/projects/CirclesCMake/build/CMakeFiles/CudaCircles.dir

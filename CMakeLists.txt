@@ -1,7 +1,11 @@
 cmake_minimum_required(VERSION 3.5)
 
+if (NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release)
+endif()
+
 set (PROJECT_NAME CudaCircles)
-set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -D_FORCE_INLINES")
+set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3")
 
 project(${PROJECT_NAME})
 
@@ -18,7 +22,7 @@ find_package(Threads)
 add_executable(${PROJECT_NAME} ${header_files} ${cpu_source_files} ${gpu_source_files})
 
 find_package(CUDA 7.5)
-list(APPEND CUDA_NVCC_FLAGS "-arch=sm_20;-std=c++11;-O2;-DVERBOSE;-D_FORCE_INLINES")
+list(APPEND CUDA_NVCC_FLAGS "-std=c++11;-D_FORCE_INLINES")
 CUDA_ADD_LIBRARY(${PROJECT_NAME}_gpu ${header_files} ${gpu_source_files})
 target_link_libraries(${PROJECT_NAME} 
 ${PROJECT_NAME}_gpu

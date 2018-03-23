@@ -162,7 +162,7 @@ __device__ void getMaxBenefit(const TangentPoint* devTangentPoints, int tpointsS
 				dist *= -1;
 			}
 			//Only take distance from lines into account for the first two circles
-			if (tpointsSize <= 6) {
+			if (tpointsSize <= 5) {
 				if (dist < minDist) {
 					minDist = dist;
 				}

@@ -1,0 +1,2 @@
+/usr/bin/ar qc libCudaCircles_gpu.a  CMakeFiles/CudaCircles_gpu.dir/csrc/CudaCircles_gpu_generated_Kernel2.cu.o
+/usr/bin/ranlib libCudaCircles_gpu.a

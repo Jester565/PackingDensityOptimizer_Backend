@@ -1,0 +1,1 @@
+/usr/bin/c++      CMakeFiles/CudaCircles.dir/src/RemoteCore.cpp.o CMakeFiles/CudaCircles.dir/src/Source.cpp.o  -o CudaCircles libCudaCircles_gpu.a -laws-cpp-sdk-sqs -laws-cpp-sdk-core -lpthread /usr/lib/x86_64-linux-gnu/libcudart_static.a -ldl /usr/lib/x86_64-linux-gnu/librt.so -lpthread 
