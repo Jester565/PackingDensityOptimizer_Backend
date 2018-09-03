@@ -4,52 +4,50 @@
 #include <cuda_runtime.h>
 #include <device_functions.h>
 #include <device_launch_parameters.h>
+#include <cuda_fp16.h>
 #define _USE_MATH_DEFINES
-#include <math.h>
 #include <float.h>
 #include <iostream>
 #include <time.h>
+#include <stdio.h>
+#include "cuda_runtime_api.h"
+#include "cuda_device_runtime_api.h"
+#include "math_constants.h"
+#include "math_functions.h"
+#include <math.h>
 
+#define NUM_SIDES 2
 #define BLOCK_SIZE2 32
-#define BLOCK_SIZE_MAX 2048
+#define BLOCK_SIZE_MAX 1024 
 
-
-__device__ void createLine(TangentPoint* tp, float pos, bool horz, bool max) {
-	tp->y = pos;
-	tp->x = horz;
-	tp->r = max;
-}
-
-__global__ void initRun(TangentPoint* devTangentPoints, CircType* devCircleTypes, CircType* devConstCircleTypes, int* devNumCircleTypes, float w, float h, int numCircTypes) {
-
-	devNumCircleTypes[0] = numCircTypes;
-	for (int i = 0; i < numCircTypes; i++) {
-		devCircleTypes[i] = devConstCircleTypes[i];
+#define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
+inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort = true)
+{
+	if (code != cudaSuccess)
+	{
+		fprintf(stderr, "GPUassert: %s %s %d\n", cudaGetErrorString(code), file, line);
+		if (abort) exit(code);
 	}
-
-	//left
-	createLine(&devTangentPoints[0], 0, false, false);
-	//top
-	createLine(&devTangentPoints[1], 0, true, false);
-	//right
-	createLine(&devTangentPoints[2], w, false, true);
-	//bottom
-	createLine(&devTangentPoints[3], h, true, true);
 }
 
-__device__ void getMaxBenefit(const TangentPoint* devTangentPoints, int tpointsSize, TangentPointResult& target, const int i, const int j, const bool side) {
-	const TangentPoint& p1 = devTangentPoints[i];
-	const TangentPoint& p2 = devTangentPoints[j];
-	//If p1.r and p2.r is greater than 0, both are circles
+__device__ void getMaxBenefit(const TangentPoint* devTangibles, int tpointsSize, TangentPointResult& target, const int i, const int j, const bool side) {
+	const TangentPoint& p1 = devTangibles[i];
+	const TangentPoint& p2 = devTangibles[j];
+	//Since i and j are greater than 3 both tangibles are circles
 	if (i > 3 && j > 3) {
-		float l = sqrt(pow(p2.x - p1.x, 2) + pow(p2.y - p1.y, 2));
+		float l = sqrtf(powf(p2.x - p1.x, 2) + powf(p2.y - p1.y, 2));
+		//Circles must be close enough so target can touch both of them
 		if (l - p1.r - p2.r > target.r * 2) {
 			target.b = -FLT_MAX;
 			return;
 		}
+
+		//Calculates distance from p2 to the point on the line made between p1 and p2 tangent to the tangentPoint
 		float d = (pow(l, 2) + (p1.r - p2.r) * (2 * target.r + p1.r + p2.r)) / (2 * l);
+		//Height of tangentPoint above or below line made between p1 and p2
 		float h = sqrt(pow(target.r + p1.r, 2) - pow(d, 2));
 		float deg = atan2f(p2.y - p1.y, p2.x - p1.x);
+		//Calculate x and y coordinates of tangent points
 		float xd = cosf(deg) * d + p1.x;
 		float yd = sinf(deg) * d + p1.y;
 		if (side) {
@@ -61,18 +59,23 @@ __device__ void getMaxBenefit(const TangentPoint* devTangentPoints, int tpointsS
 			target.y = yd + h * sin(deg + M_PI / 2.0f);
 		}
 	}
-	//One is a line and one is a circle
+	//One element is a circle and one is a line
 	else if ((i > 3 && j <= 3) || (j > 3 && i <= 3)) {
+		//Figure out which tangible is the line and which the circle
 		const TangentPoint* line = &p1;
 		const TangentPoint* circle = &p2;
 		if (j <= 3) {
 			line = &p2;
 			circle = &p1;
 		}
+		//Is the line horizontal?
 		bool horizontal = (line->x != 0);
+		//Is the line upper or lower bounding?
 		bool max = (line->r != 0);
 		if (horizontal) {
+			//Distance between circle and line
 			float yDif = abs(circle->y - line->y) - target.r;
+			//Won't work if the circle is too far from the line
 			if (yDif > circle->r + target.r || yDif < 0) {
 				target.b = -FLT_MAX;
 				return;
@@ -135,10 +138,49 @@ __device__ void getMaxBenefit(const TangentPoint* devTangentPoints, int tpointsS
 		target.x = x + (dx * target.r);
 		target.y = y + (dy * target.r);
 	}
-	float minDist = FLT_MAX;
-	for (int k = 0; k < 4; k++) {
-		if (k != i && k != j) {
-			const TangentPoint& line = devTangentPoints[k];
+}
+
+__device__ void createLine(TangentPoint* tp, float pos, bool horz, bool max) {
+	tp->y = pos;
+	tp->x = horz;
+	tp->r = max;
+}
+
+__device__ int devGetNumThreads(int numTangentPoints, int numCircleTypes) {
+	return (numTangentPoints - 1) * (numTangentPoints)* numCircleTypes;
+}
+
+//Initializes tangibles with the first lines
+__global__ void initRun(TangentPoint* devTangentPoints, CircType* devCircleTypes, CircType* devConstCircleTypes, int* devNumCircleTypes, float w, float h, int numCircTypes) {
+	//printf("Init run started");
+	devNumCircleTypes[0] = numCircTypes;
+	for (int i = 0; i < numCircTypes; i++) {
+		devCircleTypes[i] = devConstCircleTypes[i];
+	}
+
+	//left
+	createLine(&devTangentPoints[0], 0, false, false);
+	//top
+	createLine(&devTangentPoints[1], 0, true, false);
+	//right
+	createLine(&devTangentPoints[2], w, false, true);
+	//bottom
+	createLine(&devTangentPoints[3], h, true, true);
+	//printf("Init run done!");
+}
+
+__global__ void getDist(const TangentPoint* devTangibles, const int tangibleSize, const int i, const int j, TangentPointResult& target, int* devMutex) {
+	__shared__ float dists[BLOCK_SIZE_MAX];
+	__shared__ bool collided;
+	if (threadIdx.x == 0) {
+		collided = false;
+	}
+	__syncthreads();
+	dists[threadIdx.x] = FLT_MAX;
+	int idx = threadIdx.x + blockDim.x * blockIdx.x;
+	if (idx < tangibleSize && idx != i && idx != j) {
+		if (idx < 4) {
+			const TangentPoint& line = devTangibles[idx];
 			bool horizontal = (line.x != 0);
 			bool max = (line.r != 0);
 			float dist = FLT_MAX;
@@ -150,84 +192,300 @@ __device__ void getMaxBenefit(const TangentPoint* devTangentPoints, int tpointsS
 			}
 			if (max) {
 				if (dist < target.r) {
-					target.b = -FLT_MAX;
-					return;
+					collided = true;
 				}
 			}
 			else {
 				if (dist > -target.r) {
-					target.b = -FLT_MAX;
-					return;
+					collided = true;
 				}
 				dist *= -1;
 			}
-			//Only take distance from lines into account for the first two circles
-			if (tpointsSize <= 5) {
-				if (dist < minDist) {
-					minDist = dist;
-				}
+			if (tangibleSize < 5) {
+				dists[threadIdx.x] = dist;
 			}
-		}
-	}
-	for (int k = 4; k < tpointsSize; k++) {
-		if (k != i && k != j) {
-			const TangentPoint& circle = devTangentPoints[k];
-			float dist = sqrt(pow(target.x - circle.x, 2) + pow(target.y - circle.y, 2));
-			if (dist < target.r + circle.r) {
-				target.b = -FLT_MAX;
-				return;
-			}
-			if (dist < minDist) {
-				minDist = dist;
-			}
-		}
-	}
-	target.b = 1 - minDist / target.r;
-}
-
-__device__ int devGetNumThreads(int numTangentPoints, int numCircleTypes) {
-	return (numTangentPoints - 1) * (numTangentPoints)* numCircleTypes;
-}
-
-__global__ void genTangentPointResults(const TangentPoint* devTangentPoints, const CircType* devCircleTypes, TangentPointResult* devResults, const int* devNumCircleTypes, int numTangentPoints, int numCircleTypes) {
-	__shared__ TangentPointResult sharedResults[BLOCK_SIZE2];
-	TangentPointResult& target = sharedResults[threadIdx.x];
-	int numThreads = devGetNumThreads(numTangentPoints, numCircleTypes);
-	int threadI = (blockDim.x * blockIdx.x + threadIdx.x);
-	if (threadI < numThreads) {
-		//printf("ThreadI: %i\n", threadI);
-		int tsSize = (numThreads / numCircleTypes);
-		//printf("TSize: %i\n", tSize);
-		int circleI = (threadI / tsSize);
-		if (circleI < *devNumCircleTypes) {
-			bool side = (threadI % tsSize) % 2;
-			int tIdx = (threadI % tsSize) / 2;
-			int tSize = tsSize / 2;
-			//printf("TIdx: %i , numTangentPoints: %i \n", tIdx, numTangentPoints);
-			int i = (1 - sqrt((float)(1 + 8 * (tSize - tIdx)))) / 2 + numTangentPoints - 1;
-			int iIdx = tSize - ((numTangentPoints - i)*(numTangentPoints - i - 1)) / 2;
-			int j = numTangentPoints - 1 - (tIdx - iIdx);
-			if (i > 0 && j == 0) {
-				j = numTangentPoints - 1;
-			}
-			//printf("i: %i , j: %i \n", i, j);
-			target.r = devCircleTypes[circleI].r;
-			getMaxBenefit(devTangentPoints, numTangentPoints, target, i, j, side);
 		}
 		else {
-			//printf("Skipped %i", threadI);
-			target.b = -FLT_MAX;
+			const TangentPoint& circle = devTangibles[idx];
+			//distance between tangentPoint and circle
+			float dist = sqrt(pow(target.x - circle.x, 2) + pow(target.y - circle.y, 2));
+			//check if tangent point collides with circle
+			if (dist < target.r + circle.r) {
+				collided = true;
+			}
+			dists[threadIdx.x] = dist;
 		}
 	}
-	else {
-		//printf("Skipped %i", threadI);
+	__syncthreads();
+	if (!collided) {
+		int k = blockDim.x / 2;
+		while (k != 0) {
+			if (threadIdx.x < k) {
+				if (dists[threadIdx.x + k] < dists[threadIdx.x]) {
+					// && (threadIdx.x + k) < tangibleSize
+					dists[threadIdx.x] = dists[threadIdx.x + k];
+					//printf("K: %i\n", k);
+				}
+			}
+			__syncthreads();
+			//divide by 2
+			k /= 2;
+		}
+		if (threadIdx.x == 0) {
+			/*
+			float benefit = 1 - dists[0] / target.r;
+			while (atomicCAS(devMutex, 0, 1) != 0);
+			if (benefit > target.b && target.b != -FLT_MAX) {
+			target.b = benefit;
+			//printf("BENEFIT: %f", benefit);
+			}
+			atomicExch(devMutex, 0);
+			*/
+			target.b = 1 - dists[0] / target.r;
+		}
+	}
+	else if (threadIdx.x == 0) {
+		/*
+		while (atomicCAS(devMutex, 0, 1) != 0);
+		target.b = -FLT_MAX;
+		atomicExch(devMutex, 0);
+		*/
 		target.b = -FLT_MAX;
 	}
+}
+/*
+__global__ void getDist(const Tangible* devTangibles, const int tangibleSize, const int distsSize, const int i, const int j, TangentPoint& target, int* devMutex) {
+float minDist = FLT_MAX;
+for (int k = 0; k < 4; k++) {
+if (k != i && k != j) {
+const Tangible& line = devTangibles[k];
+bool horizontal = (line.x != 0);
+bool max = (line.r != 0);
+float dist = FLT_MAX;
+if (horizontal) {
+dist = line.y - target.y;
+}
+else {
+dist = line.y - target.x;
+}
+if (max) {
+if (dist < target.r) {
+target.b = -FLT_MAX;
+return;
+}
+}
+else {
+if (dist > -target.r) {
+target.b = -FLT_MAX;
+return;
+}
+dist *= -1;
+}
+//Don't take line to line into account after placing the first circle
+if (tangibleSize < 5) {
+if (dist < minDist) {
+minDist = dist;
+}
+}
+}
+}
+for (int k = 4; k < tangibleSize; k++) {
+if (k != i && k != j) {
+const Tangible& circle = devTangibles[k];
+//distance between tangentPoint and circle
+float dist = sqrt(pow(target.x - circle.x, 2) + pow(target.y - circle.y, 2));
+//check if tangent point collides with circle
+if (dist < target.r + circle.r) {
+target.b = -FLT_MAX;
+return;
+}
+if (dist < minDist) {
+minDist = dist;
+}
+}
+}
+
+//minDist is guaranteed to be set
+target.b = 1 - minDist / target.r;
+}
+*/
+
+//Initialize the first tangentPoints at the corners
+__global__ void initResults(TangentPoint* devTangibles, const CircType* devCircleTypes, TangentPointResult* devResults, TangentPointResult* devMaxResult, int numTangentPoints, int numConstCircleTypes, int totalNumTangentPoints, int* devMutex) {
+	int numThreads = devGetNumThreads(numTangentPoints, numConstCircleTypes);
+	int threadI = (blockDim.x * blockIdx.x + threadIdx.x);
+	if (threadI >= numThreads) {
+		return;
+	}
+	int tIdx = threadI / (numConstCircleTypes * 2);
+	int circleI = (threadI / 2) % numConstCircleTypes;
+	bool side = threadI % 2;
+	int tSize = numThreads / (2 * numConstCircleTypes);
+	//printf("TIdx: %i , numTangentPoints: %i \n", tIdx, numTangentPoints);
+	int i = (1 - sqrt((double)(1 + 8 * (tSize - tIdx)))) / 2 + numTangentPoints - 1;
+	int iIdx = tSize - ((numTangentPoints - i)*(numTangentPoints - i - 1)) / 2;
+	int j = (tIdx - iIdx) + i + 1;
+	//printf("i: %i, j: %i\n", i, j);
+	//Modified to account for extra columns
+	int rIdx = threadI + i * (totalNumTangentPoints - numTangentPoints) * (2 * numConstCircleTypes);
+	//printf("rIdx: %i\n", rIdx);
+	TangentPointResult& target = devResults[rIdx];
+	//printf("i: %i , j: %i \n", i, j);
+	target.r = devCircleTypes[circleI].r;
+	target.b = 0;
+	getMaxBenefit(devTangibles, numTangentPoints, target, i, j, side);
+	if (target.b != -FLT_MAX) {
+		target.b = -FLT_MAX / 2.0f;
+		getDist << <1, BLOCK_SIZE_MAX >> > (devTangibles, numTangentPoints, i, j, target, devMutex);
+	}
+	if (threadIdx.x == 0) {
+		cudaDeviceSynchronize();
+		devMaxResult->x = target.x;
+		devMaxResult->y = target.y;
+		devMaxResult->r = target.r;
+		devMaxResult->b = target.b;
+		devTangibles[numTangentPoints].r = devMaxResult->r;
+		devTangibles[numTangentPoints].x = devMaxResult->x;
+		devTangibles[numTangentPoints].y = devMaxResult->y;
+	}
+}
+
+//Runs for every tangentPoint * numCircleTypes * 2
+__global__ void placeCircle(TangentPoint* devTangibles, CircType* devCircleTypes, TangentPointResult* devResults, TangentPointResult* devMaxResult, TangentPointResult* devMaxResultTemp, int* devNumCircleTypes, int numConstCircleTypes, int numTangentPoints, int totalNumTangentPoints, int* devLastBlockId, int* devNumCircleTypesTemp, int* devMutex) {
+	//Do not run if we are out of circles or failed to place a circle
+	if (*devNumCircleTypes < 0) {
+		devNumCircleTypesTemp[0] = devNumCircleTypes[0];
+		return;
+	}
+	//Total number of threads processing
+	int numThreads = (numTangentPoints) * 2 * numConstCircleTypes;
+	//Size of the results array
+	int numResults = devGetNumThreads(totalNumTangentPoints, numConstCircleTypes);
+	//The index of this thread
+	int threadI = (blockDim.x * blockIdx.x + threadIdx.x);
+	//If this threadI exceeds the size of the data, it has nothing to process
+	if (threadI >= numThreads) {
+		return;
+	}
+	//Index of the first tangible in pair
+	int i = threadI / (numConstCircleTypes * 2);
+	//Index of the circleType
+	int circleI = (threadI / 2) % numConstCircleTypes;
+	//Get the side of the circle
+	bool side = threadI % 2;
+	//Index of the second tangible in pair
+	int j = numTangentPoints;
+	//Index of first element in the results containing tangible i
+	int iIdx = numResults / (2 * numConstCircleTypes) - ((totalNumTangentPoints - i)*(totalNumTangentPoints - i - 1)) / 2;
+	//Accounts for index offset
+	int off = threadI % (numConstCircleTypes * 2);
+	//Index of the result
+	int rIdx = (iIdx + (j - i - 1)) * numConstCircleTypes * 2 + off;
+	TangentPointResult& target = devResults[rIdx];
+	target.r = devCircleTypes[circleI].r;
+	target.b = 0;
+	getMaxBenefit(devTangibles, numTangentPoints, target, i, j, side);
+	if (target.b != -FLT_MAX) {
+		int distNumBlocks = ceilf(((float)numTangentPoints) / BLOCK_SIZE_MAX);
+		unsigned int distNumThreads = min(numTangentPoints, BLOCK_SIZE_MAX);
+		target.b = -FLT_MAX / 2;
+		/*
+		//Computes the next highest power of two
+		distNumThreads--;
+		distNumThreads |= numThreads >> 1;
+		distNumThreads |= distNumThreads >> 2;
+		distNumThreads |= distNumThreads >> 4;
+		distNumThreads |= distNumThreads >> 8;
+		distNumThreads |= distNumThreads >> 16;
+		distNumThreads++;
+		if (distNumBlocks > 1) {
+		printf("MORE NUM BLOCKS");
+		}
+		*/
+		getDist << <1, BLOCK_SIZE_MAX >> > (devTangibles, numTangentPoints, i, j, target, devMutex);
+	}
+	//printf("TargetR: %f, %f, %f\n", target.x, target.y, target.b);
+	//Ensures only one thread runs this
+	if (blockIdx.x == 0 && threadIdx.x == 0) {
+		//printf("-\n");
+		//printf("CYCLE END\n");
+		*devMaxResultTemp = *devMaxResult;
+		//printf("TDNCT: %i : %i\n", *tempDevNumCircleTypes, *devNumCircleTypes);
+		devMaxResult->b = -FLT_MAX;
+		*devLastBlockId = -1;
+		*devNumCircleTypesTemp = *devNumCircleTypes;
+		for (int i = 0; i < numConstCircleTypes; i++) {
+			if (devCircleTypes[i].r == devMaxResult->r) {
+				devCircleTypes[i].count--;
+				return;
+			}
+		}
+		printf("SHOULD NEVER REACH HERE!");
+	}
+}
+
+
+//runs on everyTangentPoint including the recently generated ones
+__global__ void setMaxResult(TangentPoint* devTangibles, CircType* devCircleTypes, TangentPointResult* devResults, TangentPointResult* devMaxResult, TangentPointResult* devMaxResultTemp, int* devMutex, int* devNumCircleTypes, int numConstCircleTypes, int numTangentPoints, int totalNumTangentPoints, int* devLastBlockId, int* devNumCircleTypesTemp) {
+	if (*devNumCircleTypesTemp < 0) {
+		return;
+	}
+	/*
+	if (threadIdx.x == 0 && blockIdx.x == 0) {
+	printf("*\n");
+	}
+	*/
+	//printf("MaxResultCalled\n");
+	__shared__ TangentPointResult sharedResults[BLOCK_SIZE_MAX];
+	sharedResults[threadIdx.x].b = -FLT_MAX;
+	int numThreads = devGetNumThreads(numTangentPoints, numConstCircleTypes);
+	int threadI = (blockDim.x * blockIdx.x + threadIdx.x);
+
+	if (threadI < numThreads) {
+		//should be i?
+		int tIdx = threadI / (2 * numConstCircleTypes);
+		int circleI = (threadI / 2) % numConstCircleTypes;
+		bool side = threadI % 2;
+		int tSize = numThreads / (2 * numConstCircleTypes);
+		//printf("TIdx: %i , numTangentPoints: %i \n", tIdx, numTangentPoints);
+		int i = (1.0 - sqrt((double)(1 + 8 * (tSize - tIdx)))) / 2.0 + numTangentPoints - 1;
+		int iIdx = tSize - ((numTangentPoints - i)*(numTangentPoints - i - 1)) / 2;
+		int j = (tIdx - iIdx) + i + 1;
+		int rIdx = threadI + i * (totalNumTangentPoints - numTangentPoints) * (2 * numConstCircleTypes);
+		TangentPointResult& target = devResults[rIdx];
+		//printf("Is %i, %i, %i\n", i, j, rIdx);
+		if (devCircleTypes[circleI].count > 0) {
+			if (j < numTangentPoints - 1 && target.b != -FLT_MAX) {
+				//Use tempMaxResult so the operation at the end of this function does not overwrite existing value
+				float dist = sqrt(pow(target.x - devMaxResultTemp->x, 2) + pow(target.y - devMaxResultTemp->y, 2));
+				//printf("Checking Dist for: (%i, %i), (%f, %f, %f): %f  ...  (%f, %f, %f)\n", i, j, target.x, target.y, target.r, dist, devTempMaxResult->x, devTempMaxResult->y, devTempMaxResult->r);
+				//printf("X: %f, Y: %f\n", devTempMaxResult->x, devTempMaxResult->y, devTempMaxResult->r);
+				if (dist < target.r + devMaxResultTemp->r) {
+					target.b = -FLT_MAX;
+				}
+				else {
+					float benefit = 1.0f - dist / target.r;
+					if (benefit > target.b) {
+						target.b = benefit;
+					}
+				}
+			}
+			sharedResults[threadIdx.x].x = target.x;
+			sharedResults[threadIdx.x].y = target.y;
+			sharedResults[threadIdx.x].r = target.r;
+			sharedResults[threadIdx.x].b = target.b;
+		}
+		else {
+			target.b = -FLT_MAX;
+		}
+		//printf("(%i, %i, %i): %f\n", i, j, rIdx, sharedResults[threadIdx.x].b);
+	}
 	__syncthreads();
-	int k = BLOCK_SIZE2 / 2;
+	int k = BLOCK_SIZE_MAX / 2;
 	while (k != 0) {
 		if (threadIdx.x < k) {
-			if (sharedResults[threadIdx.x].b < sharedResults[threadIdx.x + k].b) {
+			if (sharedResults[threadIdx.x + k].b > sharedResults[threadIdx.x].b) {
+				//printf("NewMax: replaced %f with %f\n", sharedResults[threadIdx.x].b, sharedResults[threadIdx.x + k].b);
 				sharedResults[threadIdx.x] = sharedResults[threadIdx.x + k];
 			}
 		}
@@ -236,64 +494,31 @@ __global__ void genTangentPointResults(const TangentPoint* devTangentPoints, con
 		k /= 2;
 	}
 	if (threadIdx.x == 0) {
-		devResults[blockIdx.x] = sharedResults[0];
-	}
-}
-
-__global__ void updateTangentPoints(TangentPointResult* devResults, TangentPoint* devTangentPoints, CircType* devCircleTypes, int* devNumCircleTypes, int tangentPointSize, int numResultBlocks) {
-	__shared__ TangentPointResult sharedResults[1024];
-	int stride = blockDim.x;
-	int idx = threadIdx.x;
-
-	TangentPointResult maxTpr;
-	maxTpr.b = -FLT_MAX;
-	while (idx < numResultBlocks) {
-		if (devResults[idx].b > maxTpr.b) {
-			maxTpr = devResults[idx];
+		//printf("ThreadMax: %f, (%f, %f)\n", sharedResults[0].b, sharedResults[0].x, sharedResults[0].y);
+		while (atomicCAS(devMutex, 0, 1) != 0);
+		//printf("BENEFIT: %f vs %f\n", devMaxResult->b, sharedResults[0].b);
+		if (devMaxResult->b < sharedResults[0].b || (devMaxResult->b == sharedResults[0].b && blockIdx.x > *devLastBlockId)) {
+			//printf("Max: replaced %f with %f\n", devMaxResult->b, sharedResults[0].b);
+			devMaxResult->x = sharedResults[0].x;
+			devMaxResult->y = sharedResults[0].y;
+			devMaxResult->r = sharedResults[0].r;
+			devMaxResult->b = sharedResults[0].b;
+			*devLastBlockId = blockIdx.x;
+			devTangibles[numTangentPoints].r = devMaxResult->r;
+			devTangibles[numTangentPoints].x = devMaxResult->x;
+			devTangibles[numTangentPoints].y = devMaxResult->y;
+			//printf("GRA: %f, %i / %i\n", sharedResults[0].b, blockIdx.x, gridDim.x);
 		}
-		idx += stride;
-	}
-	sharedResults[threadIdx.x] = maxTpr;
-	//printf("SR: %f () %f\n", sharedResults[threadIdx.x].b, sharedResults[threadIdx.x].r);
-	int k = blockDim.x / 2;
-	__syncthreads();
-	//printf("TI: %f () %f\n", sharedResults[threadIdx.x].b, sharedResults[threadIdx.x].r);
-	while (k != 0) {
-		if (threadIdx.x < k) {
-			if (sharedResults[threadIdx.x].b < sharedResults[threadIdx.x + k].b) {
-				//printf("Replaced %f with %f : %i\n", sharedResults[threadIdx.x].b, sharedResults[threadIdx.x + k].b, threadIdx.x + k);
-				sharedResults[threadIdx.x] = sharedResults[threadIdx.x + k];
-			}
-		}
-		__syncthreads();
-		k /= 2;
-	}
-	if (threadIdx.x == 0) {
-		maxTpr = sharedResults[0];
-		//printf("MaxTpr: %f : %f\n", maxTpr.b, maxTpr.r);
-		if (maxTpr.b == -FLT_MAX) {
+		//printf("BENEFIT: %f\n", sharedResults[0].b);
+		if (devMaxResult->b == -FLT_MAX) {
+			//printf("Set to -1\n");
 			*devNumCircleTypes = -1;
-			return;
 		}
-		//printf("This R: %f\n", maxTpr.r);
-		devTangentPoints[tangentPointSize].x = maxTpr.x;
-		devTangentPoints[tangentPointSize].y = maxTpr.y;
-		devTangentPoints[tangentPointSize].r = maxTpr.r;
-		//printf("Num CircTypes: %i\n", *devNumCircleTypes);
-		for (int i = 0; i < *devNumCircleTypes; i++) {
-			//printf("R: %f\n", devCircleTypes[i].r);
-			if (devCircleTypes[i].r == maxTpr.r) {
-				devCircleTypes[i].count--;
-				if (devCircleTypes[i].count == 0) {
-					for (int j = i + 1; j < *devNumCircleTypes; j++) {
-						devCircleTypes[i - 1] = devCircleTypes[i];
-					}
-					(*devNumCircleTypes)--;
-				}
-				return;
-			}
+		else {
+			//printf("Set to 1\n");
+			*devNumCircleTypes = 1;
 		}
-		printf("UPDATE TANGENT POINTS SHOULD NEVER GET HERE!");
+		atomicExch(devMutex, 0);
 	}
 }
 
@@ -304,9 +529,11 @@ int getNumThreads(int numTangentPoints, int numCircleTypes) {
 Kernel2Data* initK2(const std::map<float, int>& circleTypes) {
 	Kernel2Data* k2Data = new Kernel2Data();
 	k2Data->maxTangentPoints = 4;
-	k2Data->numConstCircleTypes = circleTypes.size();
-	k2Data->numCircleTypes = k2Data->numConstCircleTypes;
-	CircType* cTypeArr = new CircType[k2Data->numCircleTypes];
+	int numConstCircleTypes = circleTypes.size();
+	k2Data->numCircleTypes = circleTypes.size();
+	//k2Data->devNumCircleTypes = numConstCircleTypes;
+	//k2Data->devNumCircleTypesTemp = numConstCircleTypes;
+	CircType* cTypeArr = new CircType[numConstCircleTypes];
 	int i = 0;
 	for (auto it = circleTypes.begin(); it != circleTypes.end(); it++) {
 		k2Data->maxTangentPoints += it->second;
@@ -314,46 +541,56 @@ Kernel2Data* initK2(const std::map<float, int>& circleTypes) {
 		cTypeArr[i].count = it->second;
 		i++;
 	}
-	int maxResultBlocks = (int)ceilf((float)getNumThreads(k2Data->maxTangentPoints, k2Data->numCircleTypes) / BLOCK_SIZE2);
+	//printf("DevR Size: %i\n", getNumThreads(maxTangentPoints));
 	cudaMalloc((void**)&k2Data->devTangentPoints, k2Data->maxTangentPoints * sizeof(TangentPoint));
-	cudaMalloc((void**)&k2Data->devResults, maxResultBlocks * sizeof(TangentPointResult));
+	cudaMalloc((void**)&k2Data->devResults, getNumThreads(k2Data->maxTangentPoints, k2Data->numCircleTypes) * sizeof(TangentPointResult));
 	cudaMalloc((void**)&k2Data->devNumCircleTypes, sizeof(int));
+	cudaMalloc((void**)&k2Data->devMaxResult, sizeof(TangentPointResult));
+	cudaMalloc((void**)&k2Data->devMaxResultTemp, sizeof(TangentPointResult));
+	cudaMalloc((void**)&k2Data->devNumCircleTypes, sizeof(int));
+	cudaMalloc((void**)&k2Data->devNumCircleTypesTemp, sizeof(int));
 	cudaMalloc((void**)&k2Data->devCircleTypes, k2Data->numCircleTypes * sizeof(CircType));
 	cudaMalloc((void**)&k2Data->devConstCircleTypes, k2Data->numCircleTypes * sizeof(CircType));
 	cudaMemcpy(k2Data->devConstCircleTypes, cTypeArr, k2Data->numCircleTypes * sizeof(CircType), cudaMemcpyHostToDevice);
+	cudaMalloc((void**)&k2Data->devMutex, sizeof(int));
+	cudaMemset(k2Data->devMutex, 0, sizeof(int));
+	cudaMalloc((void**)&k2Data->devLastBlockId, sizeof(int));
 
 	k2Data->tangentPoints = new TangentPoint[k2Data->maxTangentPoints];
+
 	delete[] cTypeArr;
 	return k2Data;
 }
 
 RunResult runK2(Kernel2Data* k2Data, float w, float h) {
-	k2Data->numCircleTypes = k2Data->numConstCircleTypes;
+	//printf("CYCLE\n");
 	initRun << <1, 1 >> >(k2Data->devTangentPoints, k2Data->devCircleTypes, k2Data->devConstCircleTypes, k2Data->devNumCircleTypes, w, h, k2Data->numCircleTypes);
-	//cudaDeviceSynchronize();
+	int numInitialResults = getNumThreads(4, k2Data->numCircleTypes);
+	initResults << <1, numInitialResults >> >(k2Data->devTangentPoints, k2Data->devCircleTypes, k2Data->devResults, k2Data->devMaxResult, 4, k2Data->numCircleTypes, k2Data->maxTangentPoints, k2Data->devMutex);
+	cudaDeviceSynchronize();
 
 	clock_t begin = clock();
 	int i = 4;
 
 	for (; i < k2Data->maxTangentPoints; i++) {
-		int numBlocks = ceilf((float)getNumThreads(i, k2Data->numCircleTypes) / BLOCK_SIZE2);
-		//int numBlocks = ceilf((float)getNumThreads(i) / BLOCK_SIZE2);
-		//printf("NumBlocks: %i\n", numBlocks);
-		genTangentPointResults << <numBlocks, BLOCK_SIZE2 >> >(k2Data->devTangentPoints, k2Data->devCircleTypes, k2Data->devResults, k2Data->devNumCircleTypes, i, k2Data->numCircleTypes);
-		int numThreads = 0;
-		for (int i = 0; i <= 10; i++) {
-			numThreads = pow(2, i);
-			if (numThreads >= numBlocks) {
-				break;
-			}
+		int numThreads = i * k2Data->numCircleTypes * 2;
+		int numBlocks = ceilf((float)numThreads / BLOCK_SIZE2);
+		if (numBlocks > 1) {
+			numThreads = BLOCK_SIZE2;
 		}
-		//cudaDeviceSynchronize();
+		cudaDeviceSynchronize();
+		placeCircle << <numBlocks, numThreads >> >(k2Data->devTangentPoints, k2Data->devCircleTypes, k2Data->devResults, k2Data->devMaxResult, k2Data->devMaxResultTemp, k2Data->devNumCircleTypes, k2Data->numCircleTypes, i, k2Data->maxTangentPoints, k2Data->devLastBlockId, k2Data->devNumCircleTypesTemp, k2Data->devMutex);
+		gpuErrchk(cudaPeekAtLastError());
+		gpuErrchk(cudaDeviceSynchronize());
 		//printf("NumThreads: %i\n", numThreads);
 		//cudaDeviceSynchronize();
 		//printf("NumCirc: %i\n", numCircleTypes);
-		updateTangentPoints << <1, numThreads >> >(k2Data->devResults, k2Data->devTangentPoints, k2Data->devCircleTypes, k2Data->devNumCircleTypes, i, numBlocks);
-		//cudaDeviceSynchronize();
-		//cudaDeviceSynchronize();
+		if (i != k2Data->maxTangentPoints - 1) {
+			numThreads = getNumThreads(i + 1, k2Data->numCircleTypes);
+			numBlocks = ceilf((float)numThreads / BLOCK_SIZE_MAX);
+			cudaDeviceSynchronize();
+			setMaxResult << <numBlocks, BLOCK_SIZE_MAX >> > (k2Data->devTangentPoints, k2Data->devCircleTypes, k2Data->devResults, k2Data->devMaxResult, k2Data->devMaxResultTemp, k2Data->devMutex, k2Data->devNumCircleTypes, k2Data->numCircleTypes, i + 1, k2Data->maxTangentPoints, k2Data->devLastBlockId, k2Data->devNumCircleTypesTemp);
+		}
 		//printf("circTypes: %i", numCircleTypes);
 		/*
 		if (i % 10) {
@@ -371,19 +608,29 @@ RunResult runK2(Kernel2Data* k2Data, float w, float h) {
 	clock_t end = clock();
 	double elapsed_secs = double(end - begin) / CLOCKS_PER_SEC;
 	std::cout << "ElapsedSecs: " << elapsed_secs << std::endl;
-	cudaMemcpy(&k2Data->numCircleTypes, k2Data->devNumCircleTypes, sizeof(int), cudaMemcpyDeviceToHost);
-	cudaMemcpy(k2Data->tangentPoints, k2Data->devTangentPoints, i * sizeof(TangentPoint), cudaMemcpyDeviceToHost);
+	int numCircTypes = 0;
 	RunResult result;
-	result.tangentPoints = k2Data->tangentPoints;
+	cudaMemcpy(&numCircTypes, k2Data->devNumCircleTypes, sizeof(int), cudaMemcpyDeviceToHost);
+	result.tangentPoints = nullptr;
+	result.circlesFit = (numCircTypes >= 0);
+	if (result.circlesFit) {
+		//TangentPoint* tangibles = new TangentPoint[i];
+		cudaMemcpy(k2Data->tangentPoints, k2Data->devTangentPoints, i * sizeof(TangentPoint), cudaMemcpyDeviceToHost);
+		result.tangentPoints = k2Data->tangentPoints;
+	}
 	result.size = i;
-	result.circlesFit = (k2Data->numCircleTypes == 0);
 	return result;
 }
 
 void freeK2(Kernel2Data* k2Data) {
 	cudaFree(k2Data->devTangentPoints);
 	cudaFree(k2Data->devResults);
-	cudaFree(k2Data->devCircleTypes);
-	cudaFree(k2Data->devConstCircleTypes);
-	delete k2Data;
+	cudaFree(k2Data->devNumCircleTypes);
+	cudaFree(k2Data->devNumCircleTypesTemp);
+	cudaFree(k2Data->devMaxResultTemp);
+	cudaFree(k2Data->devMaxResult);
+	cudaFree(k2Data->devMutex);
+	cudaFree(k2Data->devLastBlockId);
+
+	delete[] k2Data->tangentPoints;
 }

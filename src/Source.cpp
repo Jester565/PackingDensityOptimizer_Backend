@@ -7,4 +7,5 @@ int main() {
 	Aws::InitAPI(options);
 	RemoteCore rc;
 	rc.run();
+	return 0;
 }
