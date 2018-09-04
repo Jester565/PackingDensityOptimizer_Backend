@@ -21,8 +21,8 @@ struct Circle {
 };
 
 struct Sphere {
-  Sphere(float x, float y, float z, float r)
-    :x(x), y(y), z(z), r(r)
+  Sphere(float3 pos, float r)
+    :x(pos.x), y(pos.y), z(pos.z), r(r)
   {
   }
   float x;
@@ -115,6 +115,7 @@ bool RemoteCore::putInDb(const std::string& msgID, const std::map<float, int>& c
   mn.SetN(std::to_string(msgNum).c_str());
   pir.AddItem(Aws::String("msgNum"), mn);
   dbClient->PutItemAsync(pir, std::bind(&RemoteCore::putInDBCB, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3, std::placeholders::_4));
+  return true;
 }
 
 bool RemoteCore::receiveMsg() {
@@ -131,10 +132,8 @@ bool RemoteCore::receiveMsg() {
       return true;
     }
   }
-  else {
-    std::cerr << "Failed to get sqs msg " << result.GetError().GetMessage() << std::endl;
-    return false;
-  }
+  std::cerr << "Failed to get sqs msg " << result.GetError().GetMessage() << std::endl;
+  return false;
 }
 
 void RemoteCore::handleMsg(const Aws::SQS::Model::Message& msg) {
@@ -145,15 +144,15 @@ void RemoteCore::handleMsg(const Aws::SQS::Model::Message& msg) {
     if (threeIt != bodyJson.end()) {
       three = threeIt.value();
       if (three) {
-        handleThree(bodyJson);
+        handleThree(msg, bodyJson);
       }
     }
     if (!three) {
-      handleTwo(bodyJson);
+      handleTwo(msg, bodyJson);
     }
 }
 
-void RemoteCore::handleTwo(const nlohmann::json& bodyJson) {
+void RemoteCore::handleTwo(const Aws::SQS::Model::Message& msg, const nlohmann::json& bodyJson) {
   auto circTypesJson = bodyJson["circTypes"];
 
   std::map<float, int> circTypes;
@@ -220,7 +219,7 @@ void RemoteCore::handleTwo(const nlohmann::json& bodyJson) {
   }
 }
 
-void RemoteCore::handleThree(const nlohmann::json& bodyJson) {
+void RemoteCore::handleThree(const Aws::SQS::Model::Message& msg, const nlohmann::json& bodyJson) {
   auto circTypesJson = bodyJson["circTypes"];
 
 	std::map<float, int> circTypes;
@@ -262,7 +261,7 @@ void RemoteCore::handleThree(const nlohmann::json& bodyJson) {
 	respBodyJson["sphereArr"] = sphereArrJson;
 	respBodyJson["msgId"] = msgId;
 
-  std::string respBody = respBodyJson.dump();
+	std::string respBody = respBodyJson.dump();
 
 	std::string respQueueUrl = bodyJson["queueUrl"];
 	Aws::SQS::Model::SendMessageRequest sendReq;
@@ -289,7 +288,7 @@ void RemoteCore::handleThree(const nlohmann::json& bodyJson) {
 void RemoteCore::narrowToSolutionTwo(two::Kernel2Data* k2Data, float w, float deltaW, float hRatio, float precision) {
   int direction = 0;
   while (true) {
-    RunResult result = two::runK2(k2Data, w, w * hRatio);
+    two::RunResult result = two::runK2(k2Data, w, w * hRatio);
     if (deltaW >= precision || !result.circlesFit) {
       if (result.circlesFit) {
 	if (direction <= 0) {
@@ -382,7 +381,7 @@ void RemoteCore::narrowToSolutionThree(three::Kernel3Data* k3Data, float w, floa
 		dims.z = w;
 		three::RunResult result = three::runK3(k3Data, dims);
 
-		if (deltaW >= 0.0001 || !result.circlesFit) {
+		if (deltaW >= 0.01 || !result.circlesFit) {
 			if (result.circlesFit) {
 				if (direction <= 0) {
 					w *= (1 - deltaW);
@@ -435,7 +434,7 @@ std::shared_ptr<SolutionThree> RemoteCore::getSolutionThree(const std::map<float
 	solution->density = sphereVolume / rectVolume;
 	std::cout << "Density: " << sphereVolume / rectVolume << std::endl;
 
-	three::freeK3(k2Data);
+	three::freeK3(k3Data);
 
   return solution;
 }

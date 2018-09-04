@@ -17,6 +17,7 @@ namespace three {
 	struct TangentPoint {
 		float3 pos;
 		float b;
+	  float r;
 	};
 
 	struct TangentPointFull {
@@ -40,8 +41,8 @@ namespace three {
 		int* devNumCircleTypes;
 		int* devNumCircleTypesTemp;
 		float3* devCornerVecs;
-		TangentPointFull* devMaxResult;
-		TangentPointFull* devMaxResultTemp;
+		TangentPoint* devMaxResult;
+		TangentPoint* devMaxResultTemp;
 		int maxTangibles;
 		int numCircleTypes;
 		int numConstCircleTypes;
@@ -50,9 +51,9 @@ namespace three {
 		int* devResultsSize;
 	};
 
-	Kernel2Data* initK3(const std::map<float, int>& circleTypes);
+	Kernel3Data* initK3(const std::map<float, int>& circleTypes);
 
-	RunResult runK3(Kernel2Data* k2Data, float3 cubeDim);
+	RunResult runK3(Kernel3Data* k3Data, float3 cubeDim);
 
-	void freeK3(Kernel2Data* k2Data);
+	void freeK3(Kernel3Data* k3Data);
 }
