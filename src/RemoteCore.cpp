@@ -5,8 +5,8 @@
 #include <aws/dynamodb/model/AttributeDefinition.h>
 #include <aws/dynamodb/model/PutItemRequest.h>
 #include <aws/dynamodb/model/PutItemResult.h>
-#include "json.hpp"
 #include "Kernel2.h"
+#include "Kernel3.h"
 #define _USE_MATH_DEFINES
 #include <math.h>
 
@@ -20,11 +20,30 @@ struct Circle {
   float r;
 };
 
-struct Solution {
+struct Sphere {
+  Sphere(float x, float y, float z, float r)
+    :x(x), y(y), z(z), r(r)
+  {
+  }
+  float x;
+  float y;
+  float z;
+  float r;
+};
+
+struct SolutionTwo {
   float w;
   float h;
   float density;
   std::vector<Circle> circles;
+};
+
+struct SolutionThree {
+  float w;
+  float h;
+  float l;
+  float density;
+  std::vector<Sphere> spheres;
 };
 
 std::string RemoteCore::TABLE_NAME = "Circle";
@@ -53,7 +72,6 @@ void RemoteCore::run() {
 
 void RemoteCore::putInDBCB(const Aws::DynamoDB::DynamoDBClient *, const Aws::DynamoDB::Model::PutItemRequest &, const Aws::DynamoDB::Model::PutItemOutcome & outcome, const std::shared_ptr<const Aws::Client::AsyncCallerContext>&)
 {
-  std::cout << "PUT IN DB CALLED" << std::endl;
   if (!outcome.IsSuccess()) {
     std::cout << outcome.GetError().GetMessage() << std::endl;
   }
@@ -120,7 +138,22 @@ bool RemoteCore::receiveMsg() {
 }
 
 void RemoteCore::handleMsg(const Aws::SQS::Model::Message& msg) {
-  auto bodyJson = nlohmann::json::parse(msg.GetBody().c_str());
+    auto bodyJson = nlohmann::json::parse(msg.GetBody().c_str());
+
+    auto threeIt = bodyJson.find("three");
+    bool three = false;
+    if (threeIt != bodyJson.end()) {
+      three = threeIt.value();
+      if (three) {
+        handleThree(bodyJson);
+      }
+    }
+    if (!three) {
+      handleTwo(bodyJson);
+    }
+}
+
+void RemoteCore::handleTwo(const nlohmann::json& bodyJson) {
   auto circTypesJson = bodyJson["circTypes"];
 
   std::map<float, int> circTypes;
@@ -145,14 +178,9 @@ void RemoteCore::handleMsg(const Aws::SQS::Model::Message& msg) {
     msgNum = bodyJson["msgNum"];
   }
   std::string msgId = bodyJson["msgId"];
-  std::shared_ptr<Solution> solution = nullptr;
+  std::shared_ptr<SolutionTwo> solution = nullptr;
   if (bodyJson["type"] == "matchArea") {
-    solution = getSolution(circTypes, precision, hRatio);
-  }
-  else if (bodyJson["type"] == "matchCount") {
-    float w = bodyJson["w"];
-    float h = bodyJson["h"];
-    solution = getMatchCountSolution(circTypes, 0.0001, w, h);
+    solution = getSolutionTwo(circTypes, precision, hRatio);
   }
   auto respBodyJson = nlohmann::json::object();
   respBodyJson["w"] = solution->w;
@@ -192,58 +220,76 @@ void RemoteCore::handleMsg(const Aws::SQS::Model::Message& msg) {
   }
 }
 
+void RemoteCore::handleThree(const nlohmann::json& bodyJson) {
+  auto circTypesJson = bodyJson["circTypes"];
 
-Kernel2Data* RemoteCore::matchCountSolution(const std::map<float, int>& circPercents, float w, float h, float countScale, float deltaCountScale, float precision) {
-  int direction = 0;
-  while (true) {
-    std::map<float, int> circCounts;
-    for (auto it = circPercents.begin(); it != circPercents.end(); it++) {
-      circCounts.insert(std::make_pair(it->first, it->second * countScale));
+	std::map<float, int> circTypes;
+  std::map<float, std::string> circExtras;
+	for (auto it = circTypesJson.begin(); it != circTypesJson.end(); it++) {
+		float radius = (*it)["radius"];
+		int count = (*it)["count"];
+		circTypes.insert(std::make_pair(radius, count));
+    auto extraIt = (*it).find("extras");
+    if (extraIt != (*it).end()) {
+      std::string extra = (*it)["extras"];
+      circExtras.insert(std::make_pair(radius, extra));
     }
-    Kernel2Data* k2Data = initK2(circCounts);
-    RunResult result = runK2(k2Data, w, h);
+	}
+	float precision = bodyJson["precision"];
+  int msgNum = 0;
+  if (bodyJson.find("msgNum") != bodyJson.end()) {
+    msgNum = bodyJson["msgNum"];
+  }
+	std::string msgId = bodyJson["msgId"];
+	std::shared_ptr<SolutionThree> solution = nullptr;
+	if (bodyJson["type"] == "matchArea") {
+		solution = getSolutionThree(circTypes, precision);
+	}
+	auto respBodyJson = nlohmann::json::object();
+	respBodyJson["w"] = solution->w;
+	respBodyJson["h"] = solution->h;
+	respBodyJson["l"] = solution->l;
+	respBodyJson["density"] = solution->density;
+	auto sphereArrJson = nlohmann::json::array();
+	for (auto it = solution->spheres.begin(); it != solution->spheres.end(); it++) {
+		auto sphereJson = nlohmann::json::object();
+		sphereJson["x"] = it->x;
+		sphereJson["y"] = it->y;
+		sphereJson["z"] = it->z;
+		sphereJson["r"] = it->r;
+		sphereArrJson.push_back(sphereJson);
+	}
+	respBodyJson["sphereArr"] = sphereArrJson;
+	respBodyJson["msgId"] = msgId;
 
-    if (deltaCountScale >= 0.0001 || !result.circlesFit) {
-      if (result.circlesFit) {
-	if (direction >= 0) {
-	  countScale *= (1 + deltaCountScale);
-	  direction = 1;
-	}
-	else {
-	  deltaCountScale /= 2.0f;
-	  countScale *= (1 + deltaCountScale);
-	  direction = 1;
-	}
-      }
-      else {
-	if (direction <= 0) {
-	  countScale *= (1 - deltaCountScale);
-	  direction = -1;
-	}
-	else {
-	  deltaCountScale /= 2.0f;
-	  countScale *= (1 - deltaCountScale);
-	  direction = -1;
-	}
-      }
+  std::string respBody = respBodyJson.dump();
+
+	std::string respQueueUrl = bodyJson["queueUrl"];
+	Aws::SQS::Model::SendMessageRequest sendReq;
+	sendReq.SetQueueUrl(respQueueUrl.c_str());
+	sendReq.SetMessageBody(respBody.c_str());
+  putInDb(msgId, circTypes, circExtras, precision, solution->density, respBody, msgNum);
+
+  auto sendResult = sqsClient->SendMessage(sendReq);
+  if (sendResult.IsSuccess()) {
+    std::cout << "Sent to queue " << respQueueUrl << std::endl;
+    Aws::SQS::Model::DeleteMessageRequest deleteReq;
+    deleteReq.SetQueueUrl(QUEUE_URL.c_str());
+    deleteReq.SetReceiptHandle(msg.GetReceiptHandle());
+    auto deleteResult = sqsClient->DeleteMessage(deleteReq);
+    if (deleteResult.IsSuccess()) {
+      std::cout << "Deleted message successfully" << std::endl;
     }
-    else {
-      return k2Data;
-    }
-    freeK2(k2Data);
+  }
+  else {
+    std::cout << "ERROR: " << sendResult.GetError().GetMessage() << std::endl;
   }
 }
 
-void RemoteCore::narrowToSolution(Kernel2Data* k2Data, float w, float deltaW, float hRatio, float precision) {
+void RemoteCore::narrowToSolutionTwo(two::Kernel2Data* k2Data, float w, float deltaW, float hRatio, float precision) {
   int direction = 0;
   while (true) {
-    std::cout << "W: " << w << "H: " << w * hRatio << std::endl;
-    RunResult result = runK2(k2Data, w, w * hRatio);
-    if (result.circlesFit) {
-      for (int i = 0; i < result.size; i++) {
-	//std::cout << "(" << result.tangentPoints[i].x << ", " << result.tangentPoints[i].y << "): " << result.tangentPoints[i].r << std::endl;
-      }
-    }
+    RunResult result = two::runK2(k2Data, w, w * hRatio);
     if (deltaW >= precision || !result.circlesFit) {
       if (result.circlesFit) {
 	if (direction <= 0) {
@@ -274,72 +320,23 @@ void RemoteCore::narrowToSolution(Kernel2Data* k2Data, float w, float deltaW, fl
   }
 }
 
-
-std::shared_ptr<Solution> RemoteCore::getMatchCountSolution(const std::map<float, int>& circPercents, float precision, float w, float h) {
-  float countScale = 1.0f;
-  float deltaCountScale = 0.1f;
-  Kernel2Data* k2Data = matchCountSolution(circPercents, w, h, countScale, deltaCountScale, precision);
-  auto solution = std::make_shared<Solution>();
-
-  float minX = 0;
-  float maxX = 0;
-  float minY = 0;
-  float maxY = 0;
-  for (int i = 0; i < 4; i++) {
-    TangentPoint& tPoint = k2Data->tangentPoints[i];
-    if (tPoint.x) {
-      if (tPoint.r) {
-	maxX = tPoint.y;
-      }
-      else {
-	minX = tPoint.y;
-      }
-    }
-    else {
-      if (tPoint.r) {
-	maxY = tPoint.y;
-      }
-      else {
-	minY = tPoint.y;
-      }
-    }
-  }
-  solution->w = maxX - minX;
-  solution->h = maxY - minY;
-  float rectArea = solution->w * solution->h;
-
-  solution->circles.reserve(k2Data->maxTangentPoints - 4);
-
-  float circleArea = 0.0f;
-  for (int i = 4; i < k2Data->maxTangentPoints; i++) {
-    TangentPoint& tPoint = k2Data->tangentPoints[i];
-    solution->circles.emplace_back(tPoint.x, tPoint.y, tPoint.r);
-    circleArea += M_PI * tPoint.r * tPoint.r;
-  }
-  solution->density = circleArea / rectArea;
-
-  freeK2(k2Data);
-
-  return solution;
-}
-
-std::shared_ptr<Solution> RemoteCore::getSolution(const std::map<float, int>& circTypes, float precision, float hRatio) {
-  Kernel2Data* k2Data = initK2(circTypes);
+std::shared_ptr<SolutionTwo> RemoteCore::getSolutionTwo(const std::map<float, int>& circTypes, float precision, float hRatio) {
+  two::Kernel2Data* k2Data = two::initK2(circTypes);
   float totalArea = 0;
   for (auto it = circTypes.begin(); it != circTypes.end(); it++) {
     totalArea += M_PI * it->first * it->first * it->second;
   }
   float w = (sqrt(totalArea)/0.84f)/hRatio;
   float deltaW = 0.05f;
-  narrowToSolution(k2Data, w, deltaW, hRatio, precision);
-  auto solution = std::make_shared<Solution>();
+  narrowToSolutionTwo(k2Data, w, deltaW, hRatio, precision);
+  auto solution = std::make_shared<SolutionTwo>();
 
   float minX = 0;
   float maxX = 0;
   float minY = 0;
   float maxY = 0;
   for (int i = 0; i < 4; i++) {
-    TangentPoint& tPoint = k2Data->tangentPoints[i];
+    two::TangentPoint& tPoint = k2Data->tangentPoints[i];
     if (tPoint.x) {
       if (tPoint.r) {
 	maxX = tPoint.y;
@@ -365,14 +362,80 @@ std::shared_ptr<Solution> RemoteCore::getSolution(const std::map<float, int>& ci
 
   float circleArea = 0.0f;
   for (int i = 4; i < k2Data->maxTangentPoints; i++) {
-    TangentPoint& tPoint = k2Data->tangentPoints[i];
+    two::TangentPoint& tPoint = k2Data->tangentPoints[i];
     solution->circles.emplace_back(tPoint.x, tPoint.y, tPoint.r);
-    //std::cout << "(" << tPoint.x << ", " << tPoint.y << "): " << tPoint.r << std::endl;
     circleArea += M_PI * tPoint.r * tPoint.r;
   }
   solution->density = circleArea / rectArea;
 
-  freeK2(k2Data);
+  two::freeK2(k2Data);
+
+  return solution;
+}
+
+void RemoteCore::narrowToSolutionThree(three::Kernel3Data* k3Data, float w, float deltaW, float precision) {
+  int direction = 0;
+	while (true) {
+		float3 dims;
+		dims.x = w;
+		dims.y = w;
+		dims.z = w;
+		three::RunResult result = three::runK3(k3Data, dims);
+
+		if (deltaW >= 0.0001 || !result.circlesFit) {
+			if (result.circlesFit) {
+				if (direction <= 0) {
+					w *= (1 - deltaW);
+					direction = -1;
+				}
+				else {
+					deltaW /= 2.0f;
+					w *= (1 - deltaW);
+					direction = -1;
+				}
+			}
+			else {
+				if (direction >= 0) {
+					w *= (1 + deltaW);
+					direction = 1;
+				}
+				else {
+					deltaW /= 2.0f;
+					w *= (1 + deltaW);
+					direction = 1;
+				}
+			}
+		}
+		else {
+			return;
+		}
+	}
+}
+
+std::shared_ptr<SolutionThree> RemoteCore::getSolutionThree(const std::map<float, int>& circTypes, float precision) {
+  three::Kernel3Data* k3Data = three::initK3(circTypes);
+  float w = 500.0f;
+	float deltaW = 0.1f;
+	narrowToSolutionThree(k3Data, w, deltaW, precision);
+	auto solution = std::make_shared<SolutionThree>();
+
+	solution->w = w;
+	solution->h = w;
+	solution->l = w;
+	float rectVolume = solution->w * solution->h * solution->l;
+
+	solution->spheres.reserve(k3Data->maxTangibles - 6);
+
+	float sphereVolume = 0.0f;
+	for (int i = 6; i < k3Data->maxTangibles; i++) {
+		three::Tangible& tb = k3Data->tangibles[i];
+		solution->spheres.emplace_back(tb.pos, tb.r);
+		sphereVolume += (4 / 3) * M_PI * tb.r * tb.r * tb.r;
+	}
+	solution->density = sphereVolume / rectVolume;
+	std::cout << "Density: " << sphereVolume / rectVolume << std::endl;
+
+	three::freeK3(k2Data);
 
   return solution;
 }
