@@ -1,7 +1,8 @@
 # PackingDensityOptimizer_Backend
-Performs packing density optimization for 3D printing particles using 2D and 3D simulations.  The 2D simulation are based on [this research paper]() 
-but using CUDA which decreased the runtime by a factor of 70.  The 3D simulation is experimental and similar to the 2D algorithm.  However, it uses dynamic parallelism
-to lower the amount of unused threads.
+Running [here](http://circweb.s3-website-us-west-2.amazonaws.com/).  Please view [the tutorial](https://github.com/Jester565/PackingDensityOptimizer_Frontend/blob/master/README.md) for instructions.
+
+Performs packing density optimization for 3D printing particles using 2D and 3D simulations.  The 2D simulation are based on [this research paper](https://pdfs.semanticscholar.org/9f04/17dbb3379c043da6af2525db3f3f4149c9f6.pdf) 
+but uses CUDA which decreased the runtime by a factor of 70.  The 3D simulation is experimental and similar to the 2D algorithm.  However, it uses dynamic parallelism to lower the amount of unused threads.
 <br />
 <br />
 The requirements for and analysis of the 2D simulation was done by Don Kim and was a major part of the 
